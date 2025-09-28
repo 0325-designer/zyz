@@ -1,18 +1,31 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from matplotlib.patches import Circle
-import matplotlib.patches as patches
-from datetime import datetime, timedelta
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.patches import FancyArrowPatch
+from mpl_toolkits.mplot3d import proj3d
 import matplotlib.colors as mcolors
+from datetime import datetime
+import warnings
 
-# 设置中文字体（如果需要显示中文）
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial']
-plt.rcParams['axes.unicode_minus'] = False
+# 忽略libpng警告
+warnings.filterwarnings("ignore", category=UserWarning, message="libpng warning: iCCP")
 
-class TyphoonTracker:
+class Arrow3D(FancyArrowPatch):
+    """Custom 3D arrow class for direction indicators"""
+    def __init__(self, xs, ys, zs, *args, **kwargs):
+        FancyArrowPatch.__init__(self, (0,0), (0,0), *args, **kwargs)
+        self._verts3d = xs, ys, zs
+
+    def draw(self, renderer):
+        xs3d, ys3d, zs3d = self._verts3d
+        xs, ys, zs = proj3d.proj_transform(xs3d, ys3d, zs3d, self.axes.M)
+        self.set_positions((xs[0],ys[0]),(xs[1],ys[1]))
+        FancyArrowPatch.draw(self, renderer)
+
+class TyphoonTracker3D:
     def __init__(self):
-        # 台风数据（英文版）
+        # Typhoon data (English version)
         self.typhoon_data = {
             "Mangkhut": {
                 "name": "Mangkhut",
@@ -61,7 +74,7 @@ class TyphoonTracker:
             }
         }
         
-        # 强度颜色映射
+        # Intensity color mapping
         self.intensity_colors = {
             "TD": "#1a9850",
             "TS": "#91cf60",
@@ -71,7 +84,7 @@ class TyphoonTracker:
             "SuperTY": "#d73027"
         }
         
-        # 强度完整名称
+        # Intensity full names
         self.intensity_names = {
             "TD": "Tropical Depression",
             "TS": "Tropical Storm",
@@ -81,156 +94,180 @@ class TyphoonTracker:
             "SuperTY": "Super Typhoon"
         }
         
-        # 当前状态
+        # Current state
         self.current_typhoon = "Mangkhut"
         self.current_points = []
         self.current_index = 0
         self.is_playing = False
         self.speed = 5
         
-        # 创建图形和子图
-        self.fig = plt.figure(figsize=(15, 10))
-        self.fig.suptitle('Typhoon Track Visualization', fontsize=16, fontweight='bold')
+        # Create figure with better layout
+        self.fig = plt.figure(figsize=(16, 12))
+        self.fig.suptitle('3D Typhoon Track Visualization', fontsize=16, fontweight='bold')
         
-        # 创建网格布局
-        self.grid = plt.GridSpec(3, 3, figure=self.fig)
+        # Create subplots with adjusted layout
+        self.ax_3d = self.fig.add_subplot(231, projection='3d')
+        self.ax_3d.set_title('3D Typhoon Track', pad=10)
         
-        # 主地图
-        self.ax_map = self.fig.add_subplot(self.grid[:, :2])
-        self.ax_map.set_title('Typhoon Track Map')
-        self.ax_map.set_xlabel('Longitude')
-        self.ax_map.set_ylabel('Latitude')
+        self.ax_map = self.fig.add_subplot(232)
+        self.ax_map.set_title('2D Map View', pad=10)
         
-        # 信息面板
-        self.ax_info = self.fig.add_subplot(self.grid[0, 2])
-        self.ax_info.set_title('Typhoon Information')
+        self.ax_pressure = self.fig.add_subplot(233)
+        self.ax_pressure.set_title('Pressure Profile', pad=10)
+        
+        self.ax_wind = self.fig.add_subplot(234)
+        self.ax_wind.set_title('Wind Speed Profile', pad=10)
+        
+        self.ax_info = self.fig.add_subplot(235)
+        self.ax_info.set_title('Typhoon Information', pad=10)
         self.ax_info.axis('off')
         
-        # 控制面板
-        self.ax_controls = self.fig.add_subplot(self.grid[1, 2])
-        self.ax_controls.set_title('Controls')
-        self.ax_controls.axis('off')
-        
-        # 图例面板
-        self.ax_legend = self.fig.add_subplot(self.grid[2, 2])
-        self.ax_legend.set_title('Intensity Legend')
+        self.ax_legend = self.fig.add_subplot(236)
+        self.ax_legend.set_title('Intensity Legend', pad=10)
         self.ax_legend.axis('off')
         
-        # 初始化图形元素
-        self.trajectory_line, = self.ax_map.plot([], [], 'b-', alpha=0.5, linewidth=2)
-        self.points_scatter = self.ax_map.scatter([], [], s=50, alpha=0.7)
-        self.current_point = self.ax_map.plot([], [], 'ro', markersize=10)[0]
+        # Initialize visualization elements
+        self.setup_plots()
         
-        # 初始化文本元素
-        self.info_text = self.ax_info.text(0.05, 0.95, '', transform=self.ax_info.transAxes, 
-                                          verticalalignment='top', fontsize=10)
-        
-        # 进度条
-        self.progress_bar = patches.Rectangle((0.1, 0.8), 0, 0.1, transform=self.ax_controls.transAxes, 
-                                            facecolor='blue', alpha=0.7)
-        self.ax_controls.add_patch(self.progress_bar)
-        self.progress_text = self.ax_controls.text(0.5, 0.75, '0%', transform=self.ax_controls.transAxes, 
-                                                  ha='center', fontsize=12)
-        
-        # 初始化
+        # Load initial data
         self.load_typhoon_data(self.current_typhoon)
-        self.setup_map()
-        self.create_legend()
-        self.create_controls()
         
-        # 设置动画
-        self.anim = animation.FuncAnimation(self.fig, self.update, frames=len(self.current_points), 
-                                          interval=200, blit=False, repeat=True)
-        self.anim.pause()  # 初始状态为暂停
+        # Animation control
+        self.anim = None
+        
+        # Adjust layout to prevent tight_layout warnings
+        plt.subplots_adjust(left=0.05, right=0.95, bottom=0.1, top=0.9, wspace=0.3, hspace=0.4)
+        
+    def setup_plots(self):
+        """Setup all plot elements"""
+        self.setup_3d_plot()
+        self.setup_2d_map()
+        self.setup_profiles()
+        self.create_legend()
         
     def load_typhoon_data(self, typhoon_name):
-        """加载台风数据"""
+        """Load typhoon data"""
         self.current_typhoon = typhoon_name
         self.current_points = self.typhoon_data[typhoon_name]["points"]
         self.current_index = 0
         
-        # 更新地图范围
-        lats = [point["lat"] for point in self.current_points]
-        lngs = [point["lng"] for point in self.current_points]
+        # Calculate data arrays
+        self.lats = np.array([point["lat"] for point in self.current_points])
+        self.lngs = np.array([point["lng"] for point in self.current_points])
+        self.pressures = np.array([point["pressure"] for point in self.current_points])
+        self.winds = np.array([point["wind"] for point in self.current_points])
+        self.intensities = [point["intensity"] for point in self.current_points]
+        self.colors = [self.intensity_colors[intensity] for intensity in self.intensities]
         
-        lat_margin = (max(lats) - min(lats)) * 0.2
-        lng_margin = (max(lngs) - min(lngs)) * 0.2
+        # Update plot limits
+        self.update_plot_limits()
         
-        self.ax_map.set_xlim(min(lngs) - lng_margin, max(lngs) + lng_margin)
-        self.ax_map.set_ylim(min(lats) - lat_margin, max(lats) + lat_margin)
+    def setup_3d_plot(self):
+        """Setup 3D visualization"""
+        self.ax_3d.set_xlabel('Longitude (°E)')
+        self.ax_3d.set_ylabel('Latitude (°N)')
+        self.ax_3d.set_zlabel('Pressure (hPa)')
+        self.ax_3d.invert_zaxis()  # Lower pressure (stronger storm) appears higher
+        self.ax_3d.grid(True, alpha=0.3)
         
-    def setup_map(self):
-        """设置地图背景"""
-        # 添加网格
-        self.ax_map.grid(True, alpha=0.3)
-        
-        # 添加海岸线（简化版）
-        coastlines = [
-            [(100, 140), (100, 120), (120, 120), (120, 100), (140, 100), (140, 120), (120, 140)],  # 亚洲轮廓
-            [(80, 20), (100, 20), (100, 40), (80, 40)]  # 菲律宾轮廓
-        ]
-        
-        for coastline in coastlines:
-            lngs, lats = zip(*coastline)
-            self.ax_map.plot(lngs, lats, 'k-', linewidth=1, alpha=0.5)
-        
-        # 添加经纬度标签
+    def setup_2d_map(self):
+        """Setup 2D map view"""
         self.ax_map.set_xlabel('Longitude (°E)')
         self.ax_map.set_ylabel('Latitude (°N)')
+        self.ax_map.grid(True, alpha=0.3)
+        self.add_coastlines()
+        
+    def add_coastlines(self):
+        """Add simplified coastlines to 2D map"""
+        # Asia coastline (simplified)
+        asia_lons = [100, 100, 120, 120, 140, 140, 120, 100]
+        asia_lats = [10, 30, 30, 40, 40, 20, 20, 10]
+        self.ax_map.plot(asia_lons, asia_lats, 'k-', linewidth=1, alpha=0.5)
+        
+        # Philippines coastline (simplified)
+        ph_lons = [117, 122, 126, 126, 122, 117]
+        ph_lats = [5, 5, 15, 20, 20, 15]
+        self.ax_map.plot(ph_lons, ph_lats, 'k-', linewidth=1, alpha=0.5)
+        
+    def setup_profiles(self):
+        """Setup pressure and wind profile plots"""
+        self.ax_pressure.set_xlabel('Time Step')
+        self.ax_pressure.set_ylabel('Pressure (hPa)')
+        self.ax_pressure.grid(True, alpha=0.3)
+        self.ax_pressure.invert_yaxis()
+        
+        self.ax_wind.set_xlabel('Time Step')
+        self.ax_wind.set_ylabel('Wind Speed (km/h)')
+        self.ax_wind.grid(True, alpha=0.3)
         
     def create_legend(self):
-        """创建图例"""
+        """Create intensity legend"""
         y_pos = 0.9
         for intensity, color in self.intensity_colors.items():
-            self.ax_legend.add_patch(patches.Rectangle((0.1, y_pos-0.05), 0.1, 0.08, 
-                                                     facecolor=color, alpha=0.8))
+            self.ax_legend.add_patch(plt.Rectangle((0.1, y_pos-0.05), 0.1, 0.08, 
+                                                 facecolor=color, alpha=0.8, transform=self.ax_legend.transAxes))
             self.ax_legend.text(0.25, y_pos, f"{intensity}: {self.intensity_names[intensity]}", 
-                              transform=self.ax_legend.transAxes, fontsize=9)
+                              transform=self.ax_legend.transAxes, fontsize=8)
             y_pos -= 0.15
-    
-    def create_controls(self):
-        """创建控制按钮文本"""
-        self.ax_controls.text(0.05, 0.6, 'Speed: Medium', transform=self.ax_controls.transAxes, 
-                            fontsize=10, color='blue')
-        self.ax_controls.text(0.05, 0.4, 'Press Space to Play/Pause', transform=self.ax_controls.transAxes, 
-                            fontsize=10, color='green')
-        self.ax_controls.text(0.05, 0.2, 'Press R to Reset', transform=self.ax_controls.transAxes, 
-                            fontsize=10, color='red')
-    
-    def update_typhoon_info(self):
-        """更新台风信息"""
-        if self.current_index < len(self.current_points):
-            point = self.current_points[self.current_index]
             
-            info_str = (
-                f"Name: {self.typhoon_data[self.current_typhoon]['name']}\n\n"
-                f"Time: {point['timestamp']}\n\n"
-                f"Intensity: {self.intensity_names[point['intensity']]}\n\n"
-                f"Pressure: {point['pressure']} hPa\n\n"
-                f"Wind Speed: {point['wind']} km/h\n\n"
+    def update_plot_limits(self):
+        """Update plot limits based on current data"""
+        # Add margins to limits
+        lat_margin = max((self.lats.max() - self.lats.min()) * 0.2, 2)
+        lon_margin = max((self.lngs.max() - self.lngs.min()) * 0.2, 2)
+        pressure_margin = max((self.pressures.max() - self.pressures.min()) * 0.2, 20)
+        
+        # 3D plot limits
+        self.ax_3d.set_xlim(self.lngs.min() - lon_margin, self.lngs.max() + lon_margin)
+        self.ax_3d.set_ylim(self.lats.min() - lat_margin, self.lats.max() + lat_margin)
+        self.ax_3d.set_zlim(self.pressures.min() - pressure_margin, self.pressures.max() + pressure_margin)
+        
+        # 2D map limits
+        self.ax_map.set_xlim(self.lngs.min() - lon_margin, self.lngs.max() + lon_margin)
+        self.ax_map.set_ylim(self.lats.min() - lat_margin, self.lats.max() + lat_margin)
+        
+        # Profile limits
+        time_points = len(self.current_points)
+        if time_points > 1:
+            self.ax_pressure.set_xlim(-0.5, time_points - 0.5)
+            self.ax_wind.set_xlim(-0.5, time_points - 0.5)
+        else:
+            self.ax_pressure.set_xlim(-0.5, 0.5)
+            self.ax_wind.set_xlim(-0.5, 0.5)
+            
+        self.ax_pressure.set_ylim(self.pressures.max() + 50, self.pressures.min() - 50)
+        self.ax_wind.set_ylim(0, max(self.winds.max() * 1.2, 100))
+    
+    def update_typhoon_info(self, frame):
+        """Update typhoon information display"""
+        if frame < len(self.current_points):
+            point = self.current_points[frame]
+            
+            info_text = (
+                f"Typhoon: {self.typhoon_data[self.current_typhoon]['name']}\n"
+                f"Time: {point['timestamp']}\n"
+                f"Intensity: {self.intensity_names[point['intensity']]}\n"
+                f"Pressure: {point['pressure']} hPa\n"
+                f"Wind Speed: {point['wind']} km/h\n"
                 f"Position: {point['lat']:.1f}°N, {point['lng']:.1f}°E"
             )
             
-            # 计算移动速度和方向（简化版）
-            if self.current_index > 0:
-                prev_point = self.current_points[self.current_index - 1]
-                distance = self.calculate_distance(prev_point["lat"], prev_point["lng"], 
-                                                 point["lat"], point["lng"])
-                speed = round(distance / 6)  # 假设每6小时一个数据点
+            # Calculate movement direction
+            if frame > 0:
+                prev_point = self.current_points[frame - 1]
                 direction = self.calculate_direction(prev_point["lat"], prev_point["lng"], 
                                                    point["lat"], point["lng"])
-                info_str += f"\n\nMovement: {speed} km/h, {direction}"
+                info_text += f"\nMovement: {direction}"
             
-            self.info_text.set_text(info_str)
-    
-    def calculate_distance(self, lat1, lng1, lat2, lng2):
-        """计算两点间距离（简化版）"""
-        d_lat = (lat2 - lat1) * 111  # 纬度每度约111km
-        d_lng = (lng2 - lng1) * 111 * np.cos((lat1 + lat2) / 2 * np.pi / 180)
-        return np.sqrt(d_lat**2 + d_lng**2)
+            # Clear and display info
+            self.ax_info.clear()
+            self.ax_info.axis('off')
+            self.ax_info.set_title('Typhoon Information', pad=10)
+            self.ax_info.text(0.05, 0.95, info_text, transform=self.ax_info.transAxes, 
+                            verticalalignment='top', fontsize=9, fontfamily='monospace')
     
     def calculate_direction(self, lat1, lng1, lat2, lng2):
-        """计算移动方向"""
+        """Calculate movement direction"""
         d_lat = lat2 - lat1
         d_lng = lng2 - lng1
         
@@ -258,102 +295,186 @@ class TyphoonTracker:
         
         return "Unknown"
     
-    def update(self, frame):
-        """更新动画帧"""
-        self.current_index = frame
-        
-        # 更新轨迹线
-        lats = [point["lat"] for point in self.current_points[:frame+1]]
-        lngs = [point["lng"] for point in self.current_points[:frame+1]]
-        self.trajectory_line.set_data(lngs, lats)
-        
-        # 更新所有点
-        all_lats = [point["lat"] for point in self.current_points]
-        all_lngs = [point["lng"] for point in self.current_points]
-        colors = [self.intensity_colors[point["intensity"]] for point in self.current_points]
-        
-        # 清除并重新创建散点图
-        self.points_scatter.remove()
-        self.points_scatter = self.ax_map.scatter(all_lngs, all_lats, c=colors, s=50, alpha=0.7)
-        
-        # 更新当前点
-        if frame < len(self.current_points):
-            current_point = self.current_points[frame]
-            self.current_point.set_data([current_point["lng"]], [current_point["lat"]])
+    def update_visualization(self, frame):
+        """Update all visualization elements for current frame"""
+        try:
+            # Clear all plots
+            self.ax_3d.clear()
+            self.ax_map.clear()
+            self.ax_pressure.clear()
+            self.ax_wind.clear()
             
-            # 添加脉冲动画效果
-            pulse_circle = Circle((current_point["lng"], current_point["lat"]), 
-                                 radius=0.5, fill=False, 
-                                 edgecolor=self.intensity_colors[current_point["intensity"]], 
-                                 linewidth=2, alpha=0.7)
-            self.ax_map.add_patch(pulse_circle)
+            # Re-setup plots
+            self.setup_3d_plot()
+            self.setup_2d_map()
+            self.setup_profiles()
+            self.add_coastlines()
             
-            # 移除之前的脉冲圆圈
-            for patch in self.ax_map.patches[1:]:  # 跳过第一个（如果有的话）
-                if isinstance(patch, Circle) and patch.get_fill() == False:
-                    patch.remove()
-        
-        # 更新信息
-        self.update_typhoon_info()
-        
-        # 更新进度条
-        progress = (frame / (len(self.current_points) - 1)) * 100 if len(self.current_points) > 1 else 0
-        self.progress_bar.set_width(0.8 * progress / 100)
-        self.progress_text.set_text(f'{progress:.1f}%')
-        
-        return self.trajectory_line, self.points_scatter, self.current_point, self.info_text, self.progress_bar, self.progress_text
+            if frame < len(self.current_points):
+                # Current point data
+                current_lat = self.lats[frame]
+                current_lng = self.lngs[frame]
+                current_pressure = self.pressures[frame]
+                current_wind = self.winds[frame]
+                current_color = self.colors[frame]
+                
+                # 3D trajectory
+                self.ax_3d.plot(self.lngs[:frame+1], self.lats[:frame+1], self.pressures[:frame+1], 
+                              'b-', alpha=0.5, linewidth=2)
+                
+                # 3D scatter points
+                for i in range(frame + 1):
+                    self.ax_3d.scatter(self.lngs[i], self.lats[i], self.pressures[i],
+                                     c=self.colors[i], s=50, alpha=0.7)
+                
+                # Current position in 3D
+                self.ax_3d.scatter([current_lng], [current_lat], [current_pressure], 
+                                 c=[current_color], s=200, alpha=1.0, edgecolors='white', linewidth=2)
+                
+                # 2D map trajectory
+                self.ax_map.plot(self.lngs[:frame+1], self.lats[:frame+1], 'b-', alpha=0.5, linewidth=2)
+                
+                # 2D scatter points
+                for i in range(frame + 1):
+                    self.ax_map.scatter(self.lngs[i], self.lats[i], c=self.colors[i], s=30, alpha=0.7)
+                
+                # Current position in 2D
+                self.ax_map.scatter([current_lng], [current_lat], c=[current_color], s=100, alpha=1.0, 
+                                  edgecolors='white', linewidth=2)
+                
+                # Pulse effect in 2D
+                pulse_circle = plt.Circle((current_lng, current_lat), 1.5, fill=False, 
+                                        edgecolor=current_color, linewidth=2, alpha=0.7)
+                self.ax_map.add_patch(pulse_circle)
+                
+                # Pressure profile
+                if frame >= 1:
+                    self.ax_pressure.plot(range(frame+1), self.pressures[:frame+1], 'b-', linewidth=2)
+                    for i in range(frame + 1):
+                        self.ax_pressure.scatter(i, self.pressures[i], c=self.colors[i], s=50)
+                
+                # Current pressure point
+                self.ax_pressure.scatter(frame, current_pressure, c=[current_color], s=100, 
+                                       edgecolors='black', linewidth=2)
+                
+                # Wind speed profile
+                if frame >= 1:
+                    self.ax_wind.plot(range(frame+1), self.winds[:frame+1], 'g-', linewidth=2)
+                    for i in range(frame + 1):
+                        self.ax_wind.scatter(i, self.winds[i], c=self.colors[i], s=50)
+                
+                # Current wind point
+                self.ax_wind.scatter(frame, current_wind, c=[current_color], s=100, 
+                                   edgecolors='black', linewidth=2)
+                
+                # Update information and titles
+                self.update_typhoon_info(frame)
+                self.ax_3d.set_title(f'3D Typhoon Track\n{self.intensity_names[self.intensities[frame]]}', pad=10)
+                self.ax_map.set_title(f'2D Map View\nFrame: {frame+1}/{len(self.current_points)}', pad=10)
+                self.ax_pressure.set_title('Pressure Profile', pad=10)
+                self.ax_wind.set_title('Wind Speed Profile', pad=10)
+                
+            # Update plot limits
+            self.update_plot_limits()
+            
+        except Exception as e:
+            print(f"Error in update_visualization: {e}")
+            
+        return []
     
-    def toggle_animation(self, event):
-        """切换动画播放状态"""
-        if event.key == ' ':
-            if self.anim.event_source:
-                if self.is_playing:
-                    self.anim.event_source.stop()
-                    self.is_playing = False
-                else:
-                    self.anim.event_source.start()
-                    self.is_playing = True
+    def start_animation(self):
+        """Start the animation"""
+        if self.anim is None:
+            self.anim = animation.FuncAnimation(
+                self.fig, 
+                self.update_visualization, 
+                frames=len(self.current_points), 
+                interval=800,  # Slower interval for better viewing
+                blit=False, 
+                repeat=True
+            )
+            self.is_playing = True
+        
+        plt.show()
     
-    def reset_animation(self, event):
-        """重置动画"""
-        if event.key == 'r' or event.key == 'R':
-            self.anim.event_source.stop()
-            self.current_index = 0
-            self.is_playing = False
-            self.update(0)
-            self.fig.canvas.draw()
+    def toggle_animation(self):
+        """Toggle animation play/pause"""
+        if self.anim:
+            if self.is_playing:
+                self.anim.event_source.stop()
+                self.is_playing = False
+            else:
+                self.anim.event_source.start()
+                self.is_playing = True
     
     def change_typhoon(self, typhoon_name):
-        """切换台风"""
-        self.anim.event_source.stop()
+        """Change current typhoon"""
         self.load_typhoon_data(typhoon_name)
+        if self.anim:
+            self.anim.event_source.stop()
+            self.anim = None
         self.current_index = 0
         self.is_playing = False
-        self.update(0)
-        self.fig.canvas.draw()
+        
+        # Redraw with new data
+        self.update_visualization(0)
+        plt.draw()
 
-# 创建并显示动画
 def main():
-    tracker = TyphoonTracker()
+    """Main function to run the 3D typhoon tracker"""
+    # Set matplotlib backend to avoid GUI issues
+    plt.switch_backend('TkAgg')
     
-    # 添加键盘事件监听
-    tracker.fig.canvas.mpl_connect('key_press_event', tracker.toggle_animation)
-    tracker.fig.canvas.mpl_connect('key_press_event', tracker.reset_animation)
+    tracker = TyphoonTracker3D()
     
-    # 添加台风选择按钮（简化版）
-    ax_mangkhut = tracker.fig.add_axes([0.05, 0.02, 0.1, 0.04])
+    # Create control buttons with better positioning
+    button_y = 0.02
+    button_height = 0.04
+    button_width = 0.12
+    button_spacing = 0.13
+    
+    ax_mangkhut = plt.axes([0.05, button_y, button_width, button_height])
     btn_mangkhut = plt.Button(ax_mangkhut, 'Mangkhut')
     btn_mangkhut.on_clicked(lambda x: tracker.change_typhoon("Mangkhut"))
     
-    ax_haiyan = tracker.fig.add_axes([0.17, 0.02, 0.1, 0.04])
+    ax_haiyan = plt.axes([0.05 + button_spacing, button_y, button_width, button_height])
     btn_haiyan = plt.Button(ax_haiyan, 'Haiyan')
     btn_haiyan.on_clicked(lambda x: tracker.change_typhoon("Haiyan"))
     
-    ax_yutu = tracker.fig.add_axes([0.29, 0.02, 0.1, 0.04])
+    ax_yutu = plt.axes([0.05 + 2*button_spacing, button_y, button_width, button_height])
     btn_yutu = plt.Button(ax_yutu, 'Yutu')
     btn_yutu.on_clicked(lambda x: tracker.change_typhoon("Yutu"))
     
-    plt.tight_layout()
+    ax_play = plt.axes([0.05 + 3*button_spacing, button_y, button_width, button_height])
+    btn_play = plt.Button(ax_play, 'Play/Pause')
+    btn_play.on_clicked(lambda x: tracker.toggle_animation())
+    
+    ax_start = plt.axes([0.05 + 4*button_spacing, button_y, button_width, button_height])
+    btn_start = plt.Button(ax_start, 'Start Animation')
+    btn_start.on_clicked(lambda x: tracker.start_animation())
+    
+    # Add keyboard controls
+    def on_key(event):
+        if event.key == ' ':
+            tracker.toggle_animation()
+        elif event.key == 'r' or event.key == 'R':
+            tracker.change_typhoon(tracker.current_typhoon)
+    
+    tracker.fig.canvas.mpl_connect('key_press_event', on_key)
+    
+    # Add instructions
+    tracker.fig.text(0.05, 0.97, "Controls: Space=Play/Pause, R=Reset", 
+                    fontsize=10, style='italic')
+    
+    # Initial display
+    tracker.update_visualization(0)
+    
+    print("3D Typhoon Tracker Started!")
+    print("Controls:")
+    print("- Press Space to play/pause animation")
+    print("- Press R to reset animation")
+    print("- Use buttons to switch between typhoons")
+    
     plt.show()
 
 if __name__ == "__main__":
